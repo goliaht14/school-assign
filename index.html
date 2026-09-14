@@ -592,12 +592,58 @@
                 }
             }
 
-            /* ============================================================
- * [PATCH 10] PDF Toolbar — บังคับไม่ให้ปุ่มหด + เลื่อนได้
- * แก้ปัญหา: toolbar บีบปุ่มจนหาย บน iPhone 6.1"
- * ============================================================ */
+            #pdfViewerModal {
+                /* ⭐ คงไว้ inset-0 จาก Tailwind — ห้าม override top/bottom */
+                top: 0 !important;
+                right: 0 !important;
+                bottom: 0 !important;
+                left: 0 !important;
+                height: 100dvh !important;
+                max-height: 100dvh !important;
+                overflow: hidden;
+            }
 
-            /* ---------- Desktop & Mobile: บังคับปุ่มไม่หด ---------- */
+            @supports not (height: 100dvh) {
+                #pdfViewerModal {
+                    height: 100vh !important;
+                    max-height: 100vh !important;
+                }
+            }
+
+            /* ⭐ Inner flex container: ใส่ safe-area padding + บังคับ layout */
+            #pdfViewerModal > .w-full.h-full {
+                height: 100% !important;
+                max-height: 100% !important;
+                padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
+                box-sizing: border-box;
+                display: flex !important;
+                flex-direction: column !important;
+                overflow: hidden;
+            }
+
+            /* ⭐ Header: ยกเลิก sticky (ไม่จำเป็น) + บังคับ flex-shrink 0 */
+            #pdfViewerModal header {
+                position: relative !important;
+                /* ⭐ เปลี่ยนจาก sticky */
+                top: auto !important;
+                flex-shrink: 0 !important;
+                flex-grow: 0 !important;
+                flex-basis: auto !important;
+                min-height: 3.5rem;
+                z-index: 20;
+                background: #FFFFFF;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+            }
+
+            /* ⭐ Scroll area: บังคับให้ flex:1 + min-height:0 (สำคัญมากบน iOS) */
+            #pdfViewerModal #pdfScrollArea {
+                flex: 1 1 0 !important;
+                min-height: 0 !important;
+                position: relative;
+                overflow: auto !important;
+                -webkit-overflow-scrolling: touch;
+            }
+
             #pdfViewerModal header > * {
                 flex-shrink: 0;
                 /* ⭐ หัวใจหลัก — ห้ามทุก element ลูกหดตัว */
@@ -4363,6 +4409,9 @@
             // ========================================== REPLACE EXISTING FUNCTION:
             // attachPdfTouchGestures เปลี่ยน: ระหว่าง pinch ใช้ CSS zoom live → ไม่
             // re-render ==========================================
+            // ========================================== REPLACE: attachPdfTouchGestures ⭐
+            // ซูมยึดจุดนิ้วหนีบ + รองรับ pan พร้อมกัน
+            // ==========================================
             function attachPdfTouchGestures() {
                 const scrollArea = document.getElementById('pdfScrollArea');
                 if (!scrollArea) 
@@ -4371,47 +4420,55 @@
                     return;
                 scrollArea.dataset.pdfGestures = '1';
 
-                let initialDist = 0;
-                let initialZoom = 1;
                 let isPinching = false;
-                const container = () => document.getElementById('pdfViewerContainer');
+                let pinchState = null;
 
-                const getDistance = (touches) => {
-                    const dx = touches[0].clientX - touches[1].clientX;
-                    const dy = touches[0].clientY - touches[1].clientY;
-                    return Math.hypot(dx, dy);
-                };
+                const getDistance = (t) => Math.hypot(
+                    t[0].clientX - t[1].clientX,
+                    t[0].clientY - t[1].clientY
+                );
+                const getMid = (t) => ({
+                    x: (t[0].clientX + t[1].clientX) / 2,
+                    y: (t[0].clientY + t[1].clientY) / 2
+                });
 
                 // ---------- TOUCHSTART ----------
                 scrollArea.addEventListener('touchstart', (e) => {
                     if (!currentPdfDoc) 
                         return;
                     
-                    // === 2 นิ้ว → เริ่ม pinch ===
                     if (e.touches.length === 2) {
                         e.preventDefault();
                         isPinching = true;
-                        initialDist = getDistance(e.touches);
-                        initialZoom = pdfZoomLevel;
+
+                        const rect = scrollArea.getBoundingClientRect();
+                        const mid = getMid(e.touches);
+                        const relX = mid.x - rect.left;
+                        const relY = mid.y - rect.top;
+
+                        // ⭐ จำ anchor ใน content-space (unscaled)
+                        pinchState = {
+                            startDist: getDistance(e.touches),
+                            startZoom: pdfZoomLevel || 1,
+                            anchorContentX: (scrollArea.scrollLeft + relX) / (pdfZoomLevel || 1),
+                            anchorContentY: (scrollArea.scrollTop + relY) / (pdfZoomLevel || 1)
+                        };
                         scrollArea
                             .classList
                             .add('pinching');
-                        const c = container();
-                        if (c) 
-                            c.style.transition = 'none';
                         return;
                     }
 
-                    // === 1 นิ้ว → ดับเบิลแทป ===
+                    // 1 นิ้ว → ดับเบิลแทป (ซูมที่จุดที่แตะ)
                     if (e.touches.length === 1) {
                         const now = Date.now();
                         if (now - lastTapTime_ < 280) {
                             e.preventDefault();
-                            pdfZoomLevel = (pdfZoomLevel > 1.05)
+                            const target = (pdfZoomLevel > 1.05)
                                 ? 1
                                 : 2;
                             pdfFitMode = 'none';
-                            applyPdfZoomTransform(); // ⭐ เร็วมาก
+                            applyZoomAroundPoint_(target, e.touches[0].clientX, e.touches[0].clientY);
                             lastTapTime_ = 0;
                         } else {
                             lastTapTime_ = now;
@@ -4421,28 +4478,38 @@
 
                 // ---------- TOUCHMOVE ----------
                 scrollArea.addEventListener('touchmove', (e) => {
-                    if (!isPinching || e.touches.length !== 2) 
+                    if (!isPinching || e.touches.length !== 2 || !pinchState) 
                         return;
                     e.preventDefault();
 
+                    const rect = scrollArea.getBoundingClientRect();
                     const dist = getDistance(e.touches);
-                    const ratio = dist / initialDist;
-                    pdfZoomLevel = Math.max(
-                        PDF_ZOOM_MIN,
-                        Math.min(PDF_ZOOM_MAX, initialZoom * ratio)
-                    );
+                    const mid = getMid(e.touches);
+                    const relX = mid.x - rect.left;
+                    const relY = mid.y - rect.top;
 
-                    // ⭐ LIVE update ด้วย CSS zoom — เร็วมาก ไม่กระตุก
-                    const c = container();
-                    if (c && CSS.supports && CSS.supports('zoom', '1')) {
-                        c.style.zoom = String(pdfZoomLevel);
-                    } else if (c) {
-                        c.style.transform = `scale(${pdfZoomLevel})`;
-                        c.style.transformOrigin = 'top center';
+                    const ratio = dist / pinchState.startDist;
+                    const newZoom = Math.max(
+                        PDF_ZOOM_MIN,
+                        Math.min(PDF_ZOOM_MAX, pinchState.startZoom * ratio)
+                    );
+                    pdfZoomLevel = newZoom;
+
+                    // ⭐ LIVE: CSS zoom + ปรับ scroll ให้ anchor อยู่ใต้จุดนิ้วเสมอ
+                    const container = document.getElementById('pdfViewerContainer');
+                    if (container && CSS.supports && CSS.supports('zoom', '1')) {
+                        container.style.zoom = String(newZoom);
+                    } else if (container) {
+                        container.style.transform = `scale(${newZoom})`;
+                        container.style.transformOrigin = 'top left';
                     }
+
+                    scrollArea.scrollLeft = pinchState.anchorContentX * newZoom - relX;
+                    scrollArea.scrollTop = pinchState.anchorContentY * newZoom - relY;
+
                     const label = document.getElementById('pdfZoomLabel');
                     if (label) 
-                        label.innerText = Math.round(pdfZoomLevel * 100) + '%';
+                        label.innerText = Math.round(newZoom * 100) + '%';
                     }
                 , {passive: false});
 
@@ -4451,14 +4518,10 @@
                     if (!isPinching) 
                         return;
                     isPinching = false;
+                    pinchState = null;
                     scrollArea
                         .classList
                         .remove('pinching');
-                    const c = container();
-                    if (c) 
-                        c.style.transition = '';
-                    
-                    // ⭐ ไม่ re-render — ใช้ zoom ที่ค้างไว้เลย
                     applyPdfZoomTransform();
                 };
 
@@ -7589,6 +7652,38 @@
             // ========================================== NEW FUNCTION:
             // applyPdfZoomTransform ประยุกต์ zoom ด้วย CSS ล้วน — เร็วมาก ไม่ re-render
             // ==========================================
+            // ========================================== NEW: applyZoomAroundPoint_
+            // ซูมโดยรักษาจุด (screen coords) ให้คงที่บนจอ
+            // ==========================================
+            function applyZoomAroundPoint_(newZoom, screenX, screenY) {
+                const scrollArea = document.getElementById('pdfScrollArea');
+                const container = document.getElementById('pdfViewerContainer');
+                if (!scrollArea || !container) {
+                    pdfZoomLevel = newZoom;
+                    applyPdfZoomTransform();
+                    return;
+                }
+
+                const rect = scrollArea.getBoundingClientRect();
+                const relX = screenX - rect.left; // ตำแหน่งเทียบ viewport scroll
+                const relY = screenY - rect.top;
+
+                // ตำแหน่งใน "content space" (unscaled) ที่อยู่ใต้จุดนี้ตอนนี้
+                const oldZoom = pdfZoomLevel || 1;
+                const contentX = (scrollArea.scrollLeft + relX) / oldZoom;
+                const contentY = (scrollArea.scrollTop + relY) / oldZoom;
+
+                // อัปเดต zoom
+                pdfZoomLevel = Math.max(PDF_ZOOM_MIN, Math.min(PDF_ZOOM_MAX, newZoom));
+                applyPdfZoomTransform();
+
+                // ⭐ คำนวณ scrollLeft/Top ใหม่ → ให้ contentX กลับมาอยู่ใต้ relX
+                requestAnimationFrame(() => {
+                    scrollArea.scrollLeft = contentX * pdfZoomLevel - relX;
+                    scrollArea.scrollTop = contentY * pdfZoomLevel - relY;
+                });
+            }
+
             function applyPdfZoomTransform() {
                 const container = document.getElementById('pdfViewerContainer');
                 if (!container) 
@@ -7838,6 +7933,8 @@
             // ========================================== REPLACE: zoomPdfViewer +
             // resetPdfZoom + fitPdfToWidth ใช้ applyPdfZoomTransform แทน renderPdfPages →
             // ไม่มี re-render ==========================================
+            // ========================================== REPLACE: zoomPdfViewer —
+            // ซูมที่กลางจอ (ไม่ติดซ้ายบน) ==========================================
             function zoomPdfViewer(step) {
                 if (!currentPdfDoc) 
                     return;
@@ -7847,9 +7944,21 @@
                 );
                 if (newZoom === pdfZoomLevel) 
                     return;
-                pdfZoomLevel = newZoom;
+                
                 pdfFitMode = 'none';
-                applyPdfZoomTransform(); // ⭐ เร็วมาก
+
+                const scrollArea = document.getElementById('pdfScrollArea');
+                if (!scrollArea) {
+                    pdfZoomLevel = newZoom;
+                    applyPdfZoomTransform();
+                    return;
+                }
+                const rect = scrollArea.getBoundingClientRect();
+                applyZoomAroundPoint_(
+                    newZoom,
+                    rect.left + rect.width / 2,
+                    rect.top + rect.height / 2
+                );
             }
 
             function resetPdfZoom() {
